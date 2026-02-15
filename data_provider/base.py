@@ -173,6 +173,18 @@ class BaseFetcher(ABC):
             Tuple: (领涨板块列表, 领跌板块列表)
         """
         return None
+    
+    def get_fundflow_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取资金流向涨跌榜
+
+        Args:
+            n: 返回前n个
+
+        Returns:
+            Tuple: (资金流入TOP列表, 资金流出TOP列表)
+        """
+        return None
 
     def get_daily_data(
         self,
@@ -914,5 +926,18 @@ class DataFetcherManager:
                     return data
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] 获取板块排行失败: {e}")
+                continue
+        return [], []
+    
+    def get_fundflow_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+        """获取资金流入流出榜"""
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_fundflow_rankings(n)
+                if data:
+                    logger.info(f"[{fetcher.name}] 获取行业资金流入流出排行成功")
+                    return data
+            except Exception as e:
+                logger.warning(f"[{fetcher.name}] 获取行业资金流入流出排行失败: {e}")
                 continue
         return [], []

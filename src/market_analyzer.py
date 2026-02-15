@@ -74,6 +74,9 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    # 资金流向
+    top_fundflow_sectors: List[Dict] = field(default_factory=list)     # 流入前5板块
+    bottom_fundflow_sectors: List[Dict] = field(default_factory=list)     # 流出前5板块
 
 
 class MarketAnalyzer:
@@ -120,6 +123,9 @@ class MarketAnalyzer:
         # 3. 获取板块涨跌榜
         self._get_sector_rankings(overview)
         
+        # 4. 资金流入流出
+        self._get_fundflow_rankings(overview)
+
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
         
@@ -205,6 +211,23 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
     
+    def _get_fundflow_rankings(self, overview: MarketOverview):
+        """获取行业资金流入流出榜"""
+        try:
+            logger.info("[大盘] 获取行业资金流入流出榜...")
+
+            top_sectors, bottom_sectors = self.data_manager.get_fundflow_rankings(5)
+
+            if top_sectors or bottom_sectors:
+                overview.top_fundflow_sectors = top_sectors
+                overview.bottom_fundflow_sectors = bottom_sectors
+
+                logger.info(f"[大盘] 资金流入TOP行业: {[s['name'] for s in overview.top_fundflow_sectors]}")
+                logger.info(f"[大盘] 资金流出TOP行业: {[s['name'] for s in overview.bottom_fundflow_sectors]}")
+
+        except Exception as e:
+            logger.error(f"[大盘] 行业资金流入流出榜: {e}")
+
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
     #     try:
@@ -327,15 +350,20 @@ class MarketAnalyzer:
         # Build data blocks
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
+        fundflow_block = self._build_fundflow_block(overview)
         sector_block = self._build_sector_block(overview)
 
         # Inject market stats after "### 一、市场总结" section (before next ###)
         if stats_block:
             review = self._insert_after_section(review, r'###\s*一、市场总结', stats_block)
 
-        # Inject indices table after "### 二、指数点评" section
+        # Inject indices table after "### 二、风格分析" section
         if indices_block:
             review = self._insert_after_section(review, r'###\s*二、风格分析', indices_block)
+
+        # Inject fundflow table after "### 三、资金流向" section
+        if fundflow_block:
+            review = self._insert_after_section(review, r'###\s*三、资金动向', fundflow_block)
 
         # Inject sector rankings after "### 四、热点解读" section
         if sector_block:
@@ -388,7 +416,23 @@ class MarketAnalyzer:
             amount_yi = amount_raw / 1e8 if amount_raw > 1e6 else amount_raw
             lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_yi:.0f} |")
         return "\n".join(lines)
-
+    
+    def _build_fundflow_block(self, overview: MarketOverview) -> str:
+        """Build fundflow table block (without amplitude)."""
+        if not overview.top_fundflow_sectors and not overview.bottom_fundflow_sectors:
+            return ""
+        lines = [
+            "| 板块 | 净流入(亿) | 涨跌幅 |",
+            "|------|-----------|--------|"]
+        for idx in overview.top_fundflow_sectors:
+            arrow = "🔴" if idx['net_flow'] < 0 else "🟢" if idx['net_flow'] > 0 else "⚪"
+            lines.append(f"| {idx['name']} | {arrow} {idx['net_flow']:.2f} | {idx['change_pct']:+.2f}% |")
+        for idx in overview.bottom_fundflow_sectors:
+            arrow = "🔴" if idx['net_flow'] < 0 else "🟢" if idx['net_flow'] > 0 else "⚪"
+            lines.append(f"| {idx['name']} | {arrow} {idx['net_flow']:.2f} | {idx['change_pct']:+.2f}% |")
+        
+        return "\n".join(lines)
+    
     def _build_sector_block(self, overview: MarketOverview) -> str:
         """Build sector ranking block."""
         if not overview.top_sectors and not overview.bottom_sectors:
@@ -417,7 +461,11 @@ class MarketAnalyzer:
         # 板块信息
         top_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
         bottom_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
-        
+
+        # 资金流向信息
+        top_fundflow_text = ", ".join([f"{s['name']}({s['net_flow']:.2f}亿,{s['change_pct']:+.2f}%)" for s in overview.top_fundflow_sectors])
+        bottom_fundflow_text = ", ".join([f"{s['name']}({s['net_flow']:.2f}亿,{s['change_pct']:+.2f}%)" for s in overview.bottom_fundflow_sectors])
+
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
         for i, n in enumerate(news[:6], 1):
@@ -456,6 +504,8 @@ class MarketAnalyzer:
 ## 板块表现
 领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
 领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
+资金流入：{top_fundflow_text if top_fundflow_text else "暂无数据"}
+资金流出：{bottom_fundflow_text if bottom_fundflow_text else "暂无数据"}
 
 ## 市场新闻
 {news_text if news_text else "暂无相关新闻"}
@@ -469,13 +519,13 @@ class MarketAnalyzer:
 ## 📊 {overview.date} 大盘复盘
 
 ### 一、市场总结
-（2-3句话概括今日市场整体表现，包括指数涨跌、结合前5日成交额分析成交量变化）
+（概括今日市场整体表现，包括指数涨跌、结合前5日成交额分析成交量变化）
 
 ### 二、风格分析
-（根据各类型指数的涨跌、成交量，并结合领涨领跌板块情况，分析市场投资主线、风格偏好解读、板块机会及风险等）
+（根据各类型指数的涨跌、成交量，并结合领涨领跌板块情况，分析市场投资主线、风格偏好解读）
 
 ### 三、资金动向
-（解读成交额流向的含义）
+（解读资金流入流出情况，并分析潜在的投资方向及风险等）
 
 ### 四、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）

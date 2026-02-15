@@ -1522,7 +1522,46 @@ class AkshareFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
+    
+    def get_fundflow_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取行业/板块资金流向
 
+        数据源优先级：
+        1. 同花顺行业资金流 (ak.stock_fund_flow_industry)
+        """
+        import akshare as ak
+
+        # 优先同花顺接口
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_fund_flow_industry() 获取行业资金流向排行...")
+            df = ak.stock_fund_flow_industry(symbol="即时")
+            if df is not None and not df.empty:
+                change_col = '净额'
+                if change_col in df.columns:
+                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+                    df = df.dropna(subset=[change_col])
+
+                    # 涨幅前n
+                    top = df.nlargest(n, change_col)
+                    top_sectors = [
+                        {'name': row['行业'], 'net_flow': row[change_col], 'change_pct': row['行业-涨跌幅']}
+                        for _, row in top.iterrows()
+                    ]
+
+                    bottom = df.nsmallest(n, change_col)
+                    bottom_sectors = [
+                        {'name': row['行业'], 'net_flow': row[change_col], 'change_pct': row['行业-涨跌幅']}
+                        for _, row in bottom.iterrows()
+                    ]
+
+                    return top_sectors, bottom_sectors
+        except Exception as e:
+            logger.error(f"[Akshare] 同花顺接口获取行业资金流向排行失败: {e}")
+            return None
 
 if __name__ == "__main__":
     # 测试代码
