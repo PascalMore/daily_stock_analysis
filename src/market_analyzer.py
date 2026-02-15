@@ -68,6 +68,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    hist_amount: str = ""               # 历史成交额（亿元）
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -178,10 +179,11 @@ class MarketAnalyzer:
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
+                overview.hist_amount = stats.get('hist_amount', "")
 
                 logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
                           f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
-                          f"成交额:{overview.total_amount:.0f}亿")
+                          f"成交额:{overview.total_amount:.0f}亿 前5日成交额:{overview.hist_amount} (单位:亿)")
 
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
@@ -333,7 +335,7 @@ class MarketAnalyzer:
 
         # Inject indices table after "### 二、指数点评" section
         if indices_block:
-            review = self._insert_after_section(review, r'###\s*二、指数点评', indices_block)
+            review = self._insert_after_section(review, r'###\s*二、风格分析', indices_block)
 
         # Inject sector rankings after "### 四、热点解读" section
         if sector_block:
@@ -369,7 +371,7 @@ class MarketAnalyzer:
             f"> 📈 上涨 **{overview.up_count}** 家 / 下跌 **{overview.down_count}** 家 / "
             f"平盘 **{overview.flat_count}** 家 | "
             f"涨停 **{overview.limit_up_count}** / 跌停 **{overview.limit_down_count}** | "
-            f"成交额 **{overview.total_amount:.0f}** 亿"
+            f"成交额 **{overview.total_amount:.0f}** 亿 / 前5日成交额 **{overview.hist_amount}** (单位:亿)"
         ]
         return "\n".join(lines)
 
@@ -449,7 +451,7 @@ class MarketAnalyzer:
 ## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
-- 两市成交额: {overview.total_amount:.0f} 亿元
+- 两市成交额: {overview.total_amount:.0f} 亿元 | 前5日成交额(日期近的靠前): {overview.hist_amount} 亿元
 
 ## 板块表现
 领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
@@ -467,10 +469,10 @@ class MarketAnalyzer:
 ## 📊 {overview.date} 大盘复盘
 
 ### 一、市场总结
-（2-3句话概括今日市场整体表现，包括指数涨跌、成交量变化）
+（2-3句话概括今日市场整体表现，包括指数涨跌、结合前5日成交额分析成交量变化）
 
-### 二、指数点评
-（分析上证、深证、创业板等各指数走势特点）
+### 二、风格分析
+（根据各类型指数的涨跌、成交量，并结合领涨领跌板块情况，分析市场投资主线、风格偏好解读、板块机会及风险等）
 
 ### 三、资金动向
 （解读成交额流向的含义）
@@ -532,7 +534,7 @@ class MarketAnalyzer:
 | 下跌家数 | {overview.down_count} |
 | 涨停 | {overview.limit_up_count} |
 | 跌停 | {overview.limit_down_count} |
-| 两市成交额 | {overview.total_amount:.0f}亿 |
+| 两市成交额 | {overview.total_amount:.0f}亿 | 前5日成交额: {overview.hist_amount} 亿
 
 ### 四、板块表现
 - **领涨**: {top_text}

@@ -629,6 +629,8 @@ class TushareFetcher(BaseFetcher):
             '000688.SH': '科创50',
             '000016.SH': '上证50',
             '000300.SH': '沪深300',
+            '000510.SH': '中证A500',
+            '000852.SH': '中证1000'
         }
 
         try:
@@ -699,7 +701,7 @@ class TushareFetcher(BaseFetcher):
                 return None
 
             # 确保按日期升序排列 (Tushare有时返回降序)
-            trade_cal = trade_cal.sort_values('cal_date')
+            trade_cal = trade_cal.sort_values('cal_date').reset_index(drop=True)
 
             # 尝试获取最新一天的数据
             last_date = trade_cal.iloc[-1]['cal_date']
@@ -735,6 +737,15 @@ class TushareFetcher(BaseFetcher):
                 limit_down = len(df[df['pct_chg'] <= -9.9])
 
                 total_amount = df['amount'].sum() * 1000 / 1e8 # 千元 -> 元 -> 亿元
+                # 近5日成交额
+                last_date_list = trade_cal.index[trade_cal['cal_date'] == last_date].tolist()
+                last_date_idx = last_date_list[0]
+                start_date_idx = max(0, last_date_idx - 5)
+                prev_df = trade_cal.iloc[start_date_idx:last_date_idx]
+                his_amount = []
+                for ix, row in prev_df.iloc[::-1].iterrows():
+                    his_df = self._api.daily(trade_date=row['cal_date'])
+                    his_amount.append(his_df['amount'].sum() * 1000 / 1e8 ) # 千元 -> 元 -> 亿元
 
                 return {
                     'up_count': up_count,
@@ -742,7 +753,8 @@ class TushareFetcher(BaseFetcher):
                     'flat_count': flat_count,
                     'limit_up_count': limit_up,
                     'limit_down_count': limit_down,
-                    'total_amount': total_amount
+                    'total_amount': total_amount,
+                    'hist_amount':  ','.join( "{:.0f}".format(i) for i in his_amount)
                 }
             else:
                 logger.warning("[Tushare] 获取市场统计数据为空")
