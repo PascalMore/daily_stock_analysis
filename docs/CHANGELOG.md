@@ -7,10 +7,44 @@
 
 ## [Unreleased]
 
+### 修复
+- 修复美股（如 ADBE）技术指标矛盾：akshare 美股复权数据异常，统一美股历史数据源为 YFinance（Issue #311）
+- 🐛 **美股指数实时行情与日线数据** (Issue #273)
+  - 修复 SPX、DJI、IXIC、NDX、VIX、RUT 等美股指数无法获取实时行情的问题
+  - 新增 `us_index_mapping` 模块，将用户输入（如 SPX）映射为 Yahoo Finance 符号（如 ^GSPC）
+  - 美股指数与美股股票日线数据直接路由至 YfinanceFetcher，避免遍历不支持的数据源
+  - 消除重复的美股识别逻辑，统一使用 `is_us_stock_code()` 函数
+
+### 优化
+- 🔒 **CI 门禁统一（P0）**
+  - 新增 `scripts/ci_gate.sh` 作为后端门禁单一入口
+  - 主 CI 改为 `backend-gate`、`docker-build`、`web-gate` 三段式
+  - CI 触发改为所有 PR，避免 Required Checks 因路径过滤缺失而卡住合并
+  - `web-gate` 支持前端路径变更按需触发
+  - 新增 `network-smoke` 工作流承载非阻断网络场景回归（`pytest -m network` + `test.sh quick`）
+- 🔍 **PR 审查门槛收紧（P0）**
+  - `pr-review` 中 flake8 严重错误改为阻断，不再仅告警
+- 📦 **发布链路收敛（P0）**
+  - `docker-publish` 调整为 tag 主触发，并增加发布前门禁校验
+  - 手动发布增加 `release_tag` 输入与 semver/changelog 强校验，避免绕过版本规范
+  - 发布前新增 `README.md` 和 `docs/CHANGELOG.md` 校验
+  - 发布前新增 Docker smoke（关键模块导入）
+- 📝 **PR 模板升级（P0）**
+  - 增加背景、范围、验证命令与结果、回滚方案、Issue 关联等必填项
+- 🤖 **AI 审查覆盖增强（P0）**
+  - `pr-review` 将 `.github/workflows/**` 与 `.github/scripts/**` 纳入可审查范围
+  - 修复自动标签步骤在 `pull_request_target` 事件下不执行的问题
+  - 新增 `AI_REVIEW_STRICT` 开关，可选将 AI 审查失败升级为阻断
+
 ### 新增
 - 📊 **仅分析结果摘要** (Issue #262)
   - 支持 `REPORT_SUMMARY_ONLY` 环境变量，设为 `true` 时只推送汇总，不含个股详情
   - 默认 `false`，多股时适合快速浏览
+- **新闻时效性与乖离率优化** (Issue #296)
+  - `NEWS_MAX_AGE_DAYS`：新闻最大时效（天），默认 3，避免使用过时信息
+  - `BIAS_THRESHOLD`：乖离率阈值（%），默认 5.0，可配置
+  - 强势趋势股（多头排列且趋势强度 ≥70）自动放宽乖离率到 1.5 倍，避免错杀 LITE/SNDK 等趋势股
+  - AI System Prompt 增加 PE 估值关注和强势趋势放宽软性引导
 - 📷 **Markdown 转图片** (Issue #289)
   - 支持 `MARKDOWN_TO_IMAGE_CHANNELS` 配置，对 Telegram、企业微信、自定义 Webhook（Discord）、邮件以图片形式发送报告
   - 邮件为内联附件，增强对不支持 HTML 客户端的兼容性
