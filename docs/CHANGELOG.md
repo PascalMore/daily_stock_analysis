@@ -7,7 +7,18 @@
 
 ## [Unreleased]
 
+### 变更（Breaking）
+- **Web 登录认证重构**：移除 `ADMIN_PASSWORD`、`ADMIN_PASSWORD_HASH`，改用 `ADMIN_AUTH_ENABLED` 开关 + 文件凭证。启用后首次访问在网页设置初始密码，支持「系统设置 > 修改密码」和 CLI `python -m src.auth reset_password` 重置。
+
 ### 修复
+- 🐛 **BOT 与 WEB UI 股票代码大小写统一** (Issue #355)
+  - BOT `/analyze` 与 WEB UI 触发分析的股票代码统一为大写（如 `aapl` → `AAPL`）
+  - 新增 `canonical_stock_code()`，在 BOT、API、Config、CLI、task_queue 入口处规范化
+  - 历史记录与任务去重逻辑可正确识别同一股票（大小写不再影响）
+- 🐛 **ETF 分析仅关注指数走势** (Issue #274)
+  - 美股/港股 ETF（如 VOO、QQQ）与 A 股 ETF 不再纳入基金公司层面风险（诉讼、声誉等）
+  - 搜索维度：ETF/指数专用 risk_check、earnings、industry 查询，避免命中基金管理人新闻
+  - AI 提示：指数型标的分析约束，`risk_alerts` 不得出现基金管理人公司经营风险
 - 修复美股（如 ADBE）技术指标矛盾：akshare 美股复权数据异常，统一美股历史数据源为 YFinance（Issue #311）
 - 🐛 **美股指数实时行情与日线数据** (Issue #273)
   - 修复 SPX、DJI、IXIC、NDX、VIX、RUT 等美股指数无法获取实时行情的问题
@@ -16,6 +27,11 @@
   - 消除重复的美股识别逻辑，统一使用 `is_us_stock_code()` 函数
 
 ### 优化
+- 🎨 **首页输入栏布局对齐优化**
+  - 股票代码输入框左缘与历史记录 glass-card 框左对齐
+  - 分析按钮右缘与 Market Sentiment 外框右对齐
+  - Market Sentiment 卡片向下拉伸填满格子，消除与 STRATEGY POINTS 之间的空隙
+  - 窄屏时输入栏填满宽度，响应式对齐保持一致
 - 🔒 **CI 门禁统一（P0）**
   - 新增 `scripts/ci_gate.sh` 作为后端门禁单一入口
   - 主 CI 改为 `backend-gate`、`docker-build`、`web-gate` 三段式
