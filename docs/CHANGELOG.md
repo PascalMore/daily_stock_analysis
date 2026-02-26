@@ -8,6 +8,13 @@
 ## [Unreleased]
 
 ### 新增（#minor）
+- 📈 **盘中实时技术面**（Issue #234）
+  - 技术面数据（MA5/MA10/MA20、多头排列）使用盘中实时价格计算，而非昨日收盘
+  - 盘中分析时，将实时价作为虚拟 K 线追加到历史序列，重算均线与趋势判断
+  - 报告「今日行情」与「均线系统」与当前价格一致，多头排列判断不再滞后
+  - 配置项：`ENABLE_REALTIME_TECHNICAL_INDICATORS`（默认 `true`）；设为 `false` 可回退为昨日收盘逻辑
+  - 非交易日或 `enable_realtime_quote` 关闭时保持原有行为
+- 📢 **PushPlus 群组推送**：新增 `PUSHPLUS_TOPIC` 配置项，支持一对多群组推送，配置群组编码后消息推送给群组所有订阅用户
 - 📅 **交易日判断**（Issue #373）
   - 默认非交易日不执行分析，按 A 股 / 港股 / 美股各自交易日历区分
   - 混合持仓时，每只股票只在其市场开市日分析，休市股票当日跳过
@@ -28,6 +35,15 @@
   - 扩展 `analysis_tools` 与 `data_tools`，优化策略问股的工具调用链路与分析覆盖
 
 ### 修复（#patch）
+- 🐛 **支持 DeepSeek 思考模式**（Issue #379）
+  - 根因：Agent 模式（tool calls）下使用 DeepSeek 思考模式时，未在 assistant 消息中回传 `reasoning_content`，导致 API 返回 400
+  - 修复：`llm_adapter._call_openai` 解析并透传 `reasoning_content`；`executor` 在 assistant_msg 中写入该字段
+  - 按模型名自动识别：`deepseek-reasoner`、`deepseek-r1`、`qwq` 等自动返回 reasoning_content，不发送 extra_body；`deepseek-chat` 需显式启用，系统自动处理
+  - 兼容性：非 DeepSeek 提供商不受影响；用户无需配置，无破坏性变更
+- 🐛 **Agent 模式下报告页「相关资讯」为空**（Issue #396）
+  - 根因：Agent 工具结果仅用于 LLM 上下文，未写入 `news_intel`，前端 `GET /api/v1/history/{query_id}/news` 查询不到数据
+  - 修复：在 `_analyze_with_agent` 中 Agent 运行结束后，调用 `search_stock_news` 并持久化（仅 1 次 API 调用，与 Agent 工具逻辑一致，无额外延迟）
+  - 兼容性：无破坏性变更，Agent 模式下报告页「相关资讯」可正常展示
 - 🐛 **修复 HTTP 非安全上下文下 /chat 页面黑屏**（Issue #377）
   - `crypto.randomUUID()` 仅在 HTTPS/localhost 安全上下文中可用，通过 `http://IP:port` 访问时页面崩溃黑屏
   - 新增 `apps/dsa-web/src/utils/uuid.ts`，提供带 fallback 的 `generateUUID()` 工具函数
@@ -101,6 +117,27 @@
   - 首次访问在网页设置初始密码；支持「系统设置 > 修改密码」和 CLI `python -m src.auth reset_password` 重置
 
 ## [3.2.6] - 2026-02-20
+### ⚠️ 破坏性变更（Breaking Changes）
+
+- **历史记录 API 变更 (Issue #322)**
+  - 路由变更：`GET /api/v1/history/{query_id}` → `GET /api/v1/history/{record_id}`
+  - 参数变更：`query_id` (字符串) → `record_id` (整数)
+  - 新闻接口变更：`GET /api/v1/history/{query_id}/news` → `GET /api/v1/history/{record_id}/news`
+  - 原因：`query_id` 在批量分析时可能重复，无法唯一标识单条历史记录。改用数据库主键 `id` 确保唯一性
+  - 影响范围：使用旧版历史详情 API 的所有客户端需同步更新
+
+### 修复
+- 修复美股（如 ADBE）技术指标矛盾：akshare 美股复权数据异常，统一美股历史数据源为 YFinance（Issue #311）
+- 🐛 **历史记录查询和显示问题 (Issue #322)**
+  - 修复历史记录列表查询中日期不一致问题：使用明天作为 endDate，确保包含今天全天的数据
+  - 修复服务器 UI 报告选择问题：原因是多条记录共享同一 `query_id`，导致总是显示第一条。现改用 `analysis_history.id` 作为唯一标识
+  - 历史详情、新闻接口及前端组件已全面适配 `record_id`
+  - 新增后台轮询（每 30s）与页面可见性变更时静默刷新历史列表，确保 CLI 发起的分析完成后前端能及时同步，使用 `silent` 模式避免触发 loading 状态
+- 🐛 **美股指数实时行情与日线数据** (Issue #273)
+  - 修复 SPX、DJI、IXIC、NDX、VIX、RUT 等美股指数无法获取实时行情的问题
+  - 新增 `us_index_mapping` 模块，将用户输入（如 SPX）映射为 Yahoo Finance 符号（如 ^GSPC）
+  - 美股指数与美股股票日线数据直接路由至 YfinanceFetcher，避免遍历不支持的数据源
+  - 消除重复的美股识别逻辑，统一使用 `is_us_stock_code()` 函数
 
 ### 优化
 - 🎨 **首页输入栏与 Market Sentiment 布局对齐优化**
