@@ -880,16 +880,16 @@ class TushareFetcher(BaseFetcher):
             df_cal = self._api.trade_cal(exchange='SSE', start_date=start_date, end_date=current_date)
             # 过滤出 is_open == 1 (开市) 的日期，并转换为列表
             date_list = df_cal[df_cal['is_open'] == 1]['cal_date'].tolist()
-            # last_date = date_list.index[df_cal['cal_date'] == last_date].tolist()
-            # last_date_idx = last_date_list[0]
-            # start_date_idx = max(0, last_date_idx - 5)
-            # prev_df = trade_cal.iloc[start_date_idx:last_date_idx]
-            # his_amount = []
-            # for ix, row in prev_df.iloc[::-1].iterrows():
-            #     his_df = self._api.daily(trade_date=row['cal_date'])
-            #     his_amount.append(his_df['amount'].sum() * 1000 / 1e8 ) # 千元 -> 元 -> 亿元
+            # 从最新的日期往前找5天
+            last_date = df['trade_date'][0]
+            start_idx = date_list.index(last_date)+1
+            his_amount = []
+            for d in date_list[start_idx:start_idx+5]:
+                his_df = self._api.daily(trade_date=d)
+                his_amount.append(his_df['amount'].sum() * 1000 / 1e8 ) # 千元 -> 元 -> 亿元
             
-            # stats['hist_amount'] =  ','.join( "{:.0f}".format(i) for i in his_amount)
+            stats['hist_amount'] =  ','.join( "{:.0f}".format(i) for i in his_amount)
+
             return stats
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
