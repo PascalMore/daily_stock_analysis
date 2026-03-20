@@ -821,7 +821,8 @@ class TushareFetcher(BaseFetcher):
                 try:
                     df = self._call_api_with_rate_limit(
                         "daily",
-                        ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
+                        #20260320 Fix(yq):tushare daily接口不支持这种正则的方式，不传代码就表示获取某一天的全部行情
+                        #ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
                         start_date=last_date,
                         end_date=last_date,
                     )
