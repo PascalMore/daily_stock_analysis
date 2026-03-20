@@ -2,11 +2,13 @@ import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiErrorAlert, ConfirmDialog, Button } from '../components/common';
+import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
 import { ReportMarkdown, ReportSummary } from '../components/report';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle } from '../hooks';
 import { useStockPoolStore } from '../stores';
+import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -50,6 +52,8 @@ const HomePage: React.FC = () => {
   useEffect(() => {
     document.title = '每日选股分析 - DSA';
   }, []);
+  const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
+  const reportText = getReportText(reportLanguage);
 
   useDashboardLifecycle({
     loadInitialHistory,
@@ -120,19 +124,20 @@ const HomePage: React.FC = () => {
               </svg>
             </button>
             <div className="relative min-w-0 flex-1">
-              <input
-                type="text"
+              <StockAutocomplete
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && query && !isAnalyzing) {
-                    event.preventDefault();
-                    void submitAnalysis();
-                  }
+                onChange={setQuery}
+                onSubmit={(stockCode, stockName, selectionSource) => {
+                  void submitAnalysis({
+                    stockCode,
+                    stockName,
+                    originalQuery: query,
+                    selectionSource: selectionSource ?? 'manual',
+                  });
                 }}
-                placeholder="输入股票代码，如 600519、HK00700、AAPL"
+                placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
                 disabled={isAnalyzing}
-                className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
+                className={inputError ? 'border-danger/50' : undefined}
               />
               {inputError ? (
                 <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
@@ -220,7 +225,7 @@ const HomePage: React.FC = () => {
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                详细报告
+                {reportText.fullReport}
               </Button>
             </div>
             <ReportSummary data={selectedReport} isHistory />
@@ -247,6 +252,7 @@ const HomePage: React.FC = () => {
           recordId={selectedReport.meta.id}
           stockName={selectedReport.meta.stockName || ''}
           stockCode={selectedReport.meta.stockCode}
+          reportLanguage={reportLanguage}
           onClose={closeMarkdownDrawer}
         />
       ) : null}
