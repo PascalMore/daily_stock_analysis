@@ -862,13 +862,11 @@ def main() -> int:
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
                 )
 
-            if config.gemini_api_key or config.openai_api_key:
-                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
-                if not analyzer.is_available():
-                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
-                    analyzer = None
-            else:
-                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
+            # 统一通过 GeminiAnalyzer（内部 LiteLLM）管理 AI 分析器，由它自己判断是否可用
+            analyzer = GeminiAnalyzer(config=config)
+            if not analyzer.is_available():
+                logger.warning("AI 分析器不可用，将仅使用模板生成报告")
+                analyzer = None
 
             run_market_review(
                 notifier=notifier,
