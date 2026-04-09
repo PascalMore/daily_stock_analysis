@@ -48,7 +48,7 @@ class ConfigIssue:
 
 
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
-SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
+SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama", "minimax")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
