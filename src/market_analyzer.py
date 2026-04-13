@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ENGLISH_SECTION_PATTERNS = {
     "market_summary": r"###\s*(?:1\.\s*)?Market Summary",
     "index_commentary": r"###\s*(?:2\.\s*)?(?:Index Commentary|Major Indices)",
+    "fund_flow": r"###\s*(?:3\.\s*)?Fund Flows",
     "sector_highlights": r"###\s*(?:4\.\s*)?(?:Sector Highlights|Sector/Theme Highlights)",
 }
 
@@ -485,7 +486,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             review = self._insert_after_section(
                 review, 
                 patterns["fund_flow"], 
-                fundflow_block
+                fundflow_block,
             )
             
         if sector_block:
