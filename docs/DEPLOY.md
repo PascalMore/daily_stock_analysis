@@ -74,10 +74,10 @@ docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d
 
 # 进入容器调试
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer bash
 
 # 手动执行一次分析
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python main.py --no-notify
 ```
 
 ### 5. 数据持久化
@@ -86,6 +86,12 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py
 - `./data/` - 数据库文件
 - `./logs/` - 日志文件
 - `./reports/` - 分析报告
+
+### 6. 权限说明
+
+Docker 镜像启动入口会自动创建并修复 `./data`、`./logs`、`./reports` 对应挂载目录的权限，然后降权为非 root 用户 (`dsa`, UID 1000) 运行应用。普通部署不需要手动 `chown` / `chmod`。
+
+如果你显式指定了 `--user` / Compose `user:`，或使用只读挂载、rootless Docker、NFS 等不允许容器修复属主的环境，请确保实际运行用户对这些目录具备写入权限。
 
 ---
 
@@ -423,10 +429,10 @@ git push -u origin main
 
 #### 3. 验证 Workflow 文件
 
-确保 `.github/workflows/daily_analysis.yml` 文件存在且已提交：
+确保 `.github/workflows/00-daily-analysis.yml` 文件存在且已提交：
 
 ```bash
-git add .github/workflows/daily_analysis.yml
+git add .github/workflows/00-daily-analysis.yml
 git commit -m "Add GitHub Actions workflow"
 git push
 ```
@@ -452,7 +458,7 @@ git push
 
 默认配置：**周一到周五，北京时间 18:00** 自动执行
 
-修改时间：编辑 `.github/workflows/daily_analysis.yml` 中的 cron 表达式：
+修改时间：编辑 `.github/workflows/00-daily-analysis.yml` 中的 cron 表达式：
 
 ```yaml
 schedule:
