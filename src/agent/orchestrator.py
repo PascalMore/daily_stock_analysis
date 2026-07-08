@@ -41,8 +41,11 @@ from src.agent.protocols import (
     normalize_decision_signal,
 )
 from src.agent.runner import parse_dashboard_json
+from src.agent.stock_scope import resolve_stock_scope
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.agent.chat_context import build_visible_chat_history
+from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
@@ -110,6 +113,25 @@ class AgentOrchestrator:
             return max(0, int(raw_value or 0))
         except (TypeError, ValueError):
             return 0
+
+    def _get_sub_agent_timeout_map(self) -> Dict[str, float]:
+        """Return per-agent timeout clamps from config, skipping disabled (0) entries."""
+        config = self.config
+        if config is None:
+            return {}
+        entries = [
+            ("technical", "agent_technical_agent_timeout_s"),
+            ("intel", "agent_intel_agent_timeout_s"),
+            ("risk", "agent_risk_agent_timeout_s"),
+            ("decision", "agent_decision_agent_timeout_s"),
+            ("portfolio", "agent_portfolio_agent_timeout_s"),
+            ("skill", "agent_skill_agent_timeout_s"),
+        ]
+        return {
+            key: float(val)
+            for key, attr in entries
+            if (val := getattr(config, attr, None)) is not None and val > 0
+        }
 
     def _build_timeout_result(
         self,
@@ -259,6 +281,19 @@ class AgentOrchestrator:
         timeout_seconds: Optional[float] = None,
     ) -> StageResult:
         """Run a stage agent while preserving compatibility with older call signatures."""
+        # Clamp by per-agent limit when configured.
+        # When pipeline budget is disabled (timeout_seconds is None),
+        # the sub-agent's own limit still applies as a standalone cap.
+        sub_agent_timeout_map = self._get_sub_agent_timeout_map()
+        if sub_agent_timeout_map:
+            agent_limit = sub_agent_timeout_map.get(agent.agent_name)
+            if agent_limit is None and agent.agent_name in getattr(self, "_skill_agent_names", set()):
+                agent_limit = sub_agent_timeout_map.get("skill")
+            if agent_limit is not None:
+                if timeout_seconds is not None:
+                    timeout_seconds = min(timeout_seconds, agent_limit)
+                else:
+                    timeout_seconds = agent_limit
         run_kwargs = {"progress_callback": progress_callback}
         if (
             timeout_seconds is not None
@@ -311,12 +346,16 @@ class AgentOrchestrator:
         from src.agent.executor import AgentResult
         from src.agent.conversation import conversation_manager
 
-        ctx = self._build_context(message, context)
+        scope_resolution = resolve_stock_scope(message, context)
+        ctx = self._build_context(message, scope_resolution.effective_context)
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
+        if scope_resolution.stock_scope is not None:
+            ctx.meta["stock_scope"] = scope_resolution.stock_scope
 
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
+        conversation_manager.get_or_create(session_id)
+        config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
+        history = build_visible_chat_history(session_id, self.llm_adapter, config)
         if history:
             ctx.meta["conversation_history"] = history
 
@@ -399,12 +438,12 @@ class AgentOrchestrator:
             if timeout_exhausted:
                 logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -423,12 +462,19 @@ class AgentOrchestrator:
                     stage_min_budget_s,
                 )
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_budget_skipped",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                        remaining=round(remaining_budget, 2),
+                        minimum=stage_min_budget_s,
+                        reason="insufficient_budget",
+                        message=(
+                            f"Skipped {agent.agent_name} analysis due to insufficient "
+                            "remaining budget"
+                        ),
+                    ))
                 return self._build_budget_skip_result(
                     stats,
                     all_tool_calls,
@@ -459,11 +505,11 @@ class AgentOrchestrator:
                 self._aggregate_skill_opinions(ctx)
 
             if progress_callback:
-                progress_callback({
-                    "type": "stage_start",
-                    "stage": agent.agent_name,
-                    "message": f"Starting {agent.agent_name} analysis...",
-                })
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
 
             remaining_timeout_s = (
                 max(0.0, timeout_s - elapsed_s)
@@ -483,15 +529,23 @@ class AgentOrchestrator:
             models_used.extend(result.meta.get("models_used", []))
 
             elapsed_s = time.time() - t0
+            if progress_callback:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=agent.agent_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+
             if timeout_s and elapsed_s >= timeout_s:
                 logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -501,14 +555,6 @@ class AgentOrchestrator:
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
-
-            if progress_callback:
-                progress_callback({
-                    "type": "stage_done",
-                    "stage": agent.agent_name,
-                    "status": result.status.value,
-                    "duration": result.duration_s,
-                })
 
             if ctx.meta.get("response_mode") == "chat" and agent.agent_name == "decision":
                 final_text = result.meta.get("raw_text")
@@ -708,6 +754,12 @@ class AgentOrchestrator:
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
             if context.get("market_phase_context"):
                 ctx.meta["market_phase_context"] = context["market_phase_context"]
+            daily_market_context = context.get("daily_market_context")
+            if isinstance(daily_market_context, dict) and daily_market_context:
+                ctx.meta["daily_market_context"] = dict(daily_market_context)
+            analysis_context_pack_summary = context.get("analysis_context_pack_summary")
+            if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+                ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",
@@ -1363,6 +1415,9 @@ class AgentOrchestrator:
 # be kept at module level to avoid re-creating it on every call.
 _COMMON_WORDS: set[str] = {
     # Pronouns / articles / prepositions / conjunctions
+    "AM", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN",
+    "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO",
+    "UP", "US", "WE",
     "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL",
     "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "HAS",
     "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOW", "OLD",
@@ -1381,7 +1436,10 @@ _COMMON_WORDS: set[str] = {
     "STOCK", "TRADE", "PRICE", "INDEX", "FUND",
     "HIGH", "LOW", "OPEN", "CLOSE", "STOP", "LOSS",
     "TREND", "BULL", "BEAR", "RISK", "CASH", "BOND",
-    "MACD", "VWAP", "BOLL",
+    "MACD", "VWAP", "BOLL", "KDJ",
+    "TTM", "LTM", "NTM", "FWD", "YOY", "QOQ", "YTD",
+    "EBIT", "EBITDA", "DCF", "CAGR", "FCF", "NAV", "AUM",
+    "PE", "PB",
     # Greetings / filler words that often appear in chat messages
     "HELLO", "PLEASE", "THANKS", "CHECK", "LOOK", "THINK",
     "MAYBE", "GUESS", "TELL", "SHOW", "WHAT", "WHATS",
@@ -1391,6 +1449,11 @@ _COMMON_WORDS: set[str] = {
 _LOWERCASE_TICKER_HINTS = re.compile(
     r"分析|看看|查一?下|研究|诊断|走势|趋势|股价|股票|个股",
 )
+
+
+def _is_denied_ticker_candidate(candidate: str) -> bool:
+    """Return whether a text token should not be auto-treated as a ticker."""
+    return (candidate or "").strip().upper() in _COMMON_WORDS
 
 
 def _extract_stock_code(text: str) -> str:
@@ -1405,17 +1468,16 @@ def _extract_stock_code(text: str) -> str:
     if m:
         return m.group(1).upper()
     # US ticker — require 2+ uppercase letters bounded by non-alpha chars.
-    m = re.search(r'(?<![a-zA-Z])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z])', text)
-    if m:
-        candidate = m.group(1)
-        if candidate not in _COMMON_WORDS:
+    for match in re.finditer(r'(?<![a-zA-Z])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z])', text):
+        candidate = match.group(1)
+        if not _is_denied_ticker_candidate(candidate):
             return candidate
 
     stripped = (text or "").strip()
     bare_match = re.fullmatch(r'([A-Za-z]{2,5}(?:\.[A-Za-z]{1,2})?)', stripped)
     if bare_match:
         candidate = bare_match.group(1).upper()
-        if candidate not in _COMMON_WORDS:
+        if not _is_denied_ticker_candidate(candidate):
             return candidate
 
     if not _LOWERCASE_TICKER_HINTS.search(stripped):
@@ -1424,7 +1486,7 @@ def _extract_stock_code(text: str) -> str:
     for match in re.finditer(r'(?<![a-zA-Z])([A-Za-z]{2,5}(?:\.[A-Za-z]{1,2})?)(?![a-zA-Z])', text):
         raw_candidate = match.group(1)
         candidate = raw_candidate.upper()
-        if candidate in _COMMON_WORDS:
+        if _is_denied_ticker_candidate(candidate):
             continue
         return candidate
     return ""
