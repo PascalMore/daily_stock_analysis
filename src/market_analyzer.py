@@ -47,7 +47,7 @@ _ENGLISH_SECTION_PATTERNS = {
 
 _CHINESE_SECTION_PATTERNS = {
     "market_summary": r"###\s*一、(?:盘面总览|市场总结)",
-    "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数｜风格分析)",
+    "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数|风格分析)",
     "sector_highlights": r"###\s*三、(?:板块主线|热点解读|板块表现)",
     "funds_sentiment": r"###\s*四、(?:资金与情绪|资金动向)",
     "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
@@ -976,8 +976,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if not match:
             return text
         start = match.end()
-        # Find the next ## or ### heading after this one
-        next_heading = re.search(r'\n#{2,3}\s', text[start:])
+        # Find the next ### heading after this one
+        next_heading = re.search(r'\n###\s', text[start:])
         if next_heading:
             insert_pos = start + next_heading.start()
         else:
