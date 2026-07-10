@@ -832,7 +832,7 @@ class TushareFetcher(BaseFetcher):
                             'prev_close': prev_close,
                             'volume': safe_float(row['vol']),
                             'amount': safe_float(row['amount']) * 1000, # 千元转元
-                            'amplitude': 0.0 # Tushare index_daily 不直接返回振幅
+                            'amplitude': round(((safe_float(row['high']) or 0) - (safe_float(row['low']) or 0)) / prev_close * 100, 2) if prev_close else 0.0  # Tushare index_daily 不直接返回振幅，根据 high/low/prev_close 计算
                         })
                 except Exception as e:
                     logger.debug(f"Tushare 获取指数 {name} 失败: {e}")
