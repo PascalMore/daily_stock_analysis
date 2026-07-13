@@ -3318,3 +3318,329 @@ Sector text.
         assert violations == [], (
             f"market_analyzer.py still accesses private Analyzer attributes: {violations}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _normalize_market_review_headings (DESIGN-09-006):
+#   helper unit tests + drift integration tests for _inject_data_into_review
+# ---------------------------------------------------------------------------
+
+class TestNormalizeMarketReviewHeadings:
+    """Direct unit tests for the idempotent heading normalizer."""
+
+    def _normalize(self, review: str, *, language: str = "zh", date: str = "2026-03-05") -> str:
+        from src.market_analyzer import MarketAnalyzer
+        return MarketAnalyzer._normalize_market_review_headings(
+            review, language=language, date=date,
+        )
+
+    def test_normalize_headings_chinese_h1_h2_drift_to_h2_h3(self):
+        review = (
+            "# 2026-03-05 大盘复盘\n\n"
+            "## 一、盘面总览\n正文\n\n"
+            "## 二、风格分析\n正文\n\n"
+            "## 三、板块主线\n正文"
+        )
+        result = self._normalize(review)
+        assert "## 2026-03-05 大盘复盘" in result
+        assert "### 一、盘面总览" in result
+        assert "### 二、风格分析" in result
+        assert "### 三、板块主线" in result
+        # Headings must be normalized to H2 (title) and H3 (sections), not H1/H2.
+        assert not any(
+            line.startswith("# ") and "2026-03-05 大盘复盘" in line
+            for line in result.splitlines()
+        )
+        assert not any(
+            line.startswith("## ")
+            and ("一、盘面总览" in line or "二、风格分析" in line or "三、板块主线" in line)
+            for line in result.splitlines()
+        )
+
+    def test_normalize_headings_english_h1_h2_drift_to_h2_h3(self):
+        review = (
+            "# 2026-03-05 A-share Market Recap\n\n"
+            "## 1. Market Summary\nSummary.\n\n"
+            "## 2. Index Commentary\nIndex.\n\n"
+            "## 4. Sector Highlights\nSector."
+        )
+        result = self._normalize(review, language="en")
+        assert "## 2026-03-05 A-share Market Recap" in result
+        assert "### 1. Market Summary" in result
+        assert "### 2. Index Commentary" in result
+        assert "### 4. Sector Highlights" in result
+        # No H1 title line and no H2 section line for these markers.
+        assert not any(
+            line.startswith("# ") and "2026-03-05 A-share Market Recap" in line
+            for line in result.splitlines()
+        )
+        assert not any(
+            line.startswith("## ")
+            and (
+                "1. Market Summary" in line
+                or "2. Index Commentary" in line
+                or "4. Sector Highlights" in line
+            )
+            for line in result.splitlines()
+        )
+
+    def test_normalize_headings_already_correct_is_noop(self):
+        review = (
+            "## 2026-03-05 大盘复盘\n\n"
+            "### 一、盘面总览\n正文\n\n"
+            "### 二、指数结构\n正文"
+        )
+        assert self._normalize(review) == review
+
+    def test_normalize_headings_preserves_h4_subsections(self):
+        review = (
+            "## 2026-03-05 大盘复盘\n\n"
+            "### 三、板块主线\n正文\n\n"
+            "#### 行业板块领涨 Top 5\n\n"
+            "| 1 | AI算力 | +3.25% |"
+        )
+        result = self._normalize(review)
+        assert "#### 行业板块领涨 Top 5" in result
+        assert "| 1 | AI算力 | +3.25% |" in result
+
+    def test_normalize_headings_unrecognized_returns_original(self):
+        review = (
+            "## 2026-03-05 大盘复盘\n\n"
+            "### 今日主线观察\n正文\n\n"
+            "### 一些别的章节\n正文"
+        )
+        assert self._normalize(review) == review
+
+    def test_normalize_headings_idempotent(self):
+        review = (
+            "# 2026-03-05 大盘复盘\n\n"
+            "## 一、盘面总览\n正文\n\n"
+            "## 二、指数结构\n正文\n\n"
+            "## 三、板块主线\n正文"
+        )
+        once = self._normalize(review)
+        twice = self._normalize(once)
+        assert once == twice
+
+    def test_normalize_headings_preserves_emoji_prefix(self):
+        review = (
+            "## 2026-03-05 大盘复盘\n\n"
+            "## 🎯 一、盘面总览\n正文\n\n"
+            "## 📈 二、风格分析\n正文"
+        )
+        result = self._normalize(review)
+        assert "### 🎯 一、盘面总览" in result
+        assert "### 📈 二、风格分析" in result
+
+    def test_normalize_headings_ignores_other_dates(self):
+        """A multi-market report with two date-titles should normalize both."""
+        review = (
+            "# A股大盘复盘\n\n"
+            "## 系统wrapper - 不动\n\n"
+            "# 2026-03-05 大盘复盘\n\n"
+            "## 一、盘面总览\n正文\n\n"
+            "## 二、指数结构\n正文"
+        )
+        result = self._normalize(review)
+        # The wrapper "# A股大盘复盘" is not a date+大盘复盘 line -> unchanged.
+        assert "# A股大盘复盘" in result
+        # The drift "# 2026-03-05 大盘复盘" -> "## 2026-03-05 大盘复盘".
+        assert "## 2026-03-05 大盘复盘" in result
+
+    def test_inject_data_into_review_with_drifted_chinese_headings(self):
+        """End-to-end: LLM emits #+## drift; inject must still emit data tables."""
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        # NOTE: TestNormalizeMarketReviewHeadings does NOT inherit from the
+        # helper class on TestMarketAnalyzerBypassFix; rebuild the analyzer
+        # here using the same recipe.
+        with patch("src.analyzer.get_config") as mock_cfg, \
+             patch("src.market_analyzer.get_config") as mock_cfg2:
+            cfg = MagicMock()
+            cfg.litellm_model = "gemini/gemini-2.0-flash"
+            cfg.litellm_fallback_models = []
+            cfg.gemini_api_keys = ["«redacted:sk-…»"]
+            cfg.anthropic_api_keys = []
+            cfg.openai_api_keys = []
+            cfg.deepseek_api_keys = []
+            cfg.llm_model_list = []
+            cfg.openai_base_url = None
+            cfg.market_review_region = "cn"
+            cfg.market_review_color_scheme = "green_up"
+            cfg.report_language = "zh"
+            cfg.generation_backend = "litellm"
+            cfg.generation_fallback_backend = "litellm"
+            mock_cfg.return_value = cfg
+            mock_cfg2.return_value = cfg
+
+            from src.core.market_profile import CN_PROFILE
+            from src.core.market_strategy import get_market_strategy_blueprint
+            from src.analyzer import GeminiAnalyzer
+            from src.market_analyzer import MarketAnalyzer
+
+            analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+            analyzer._router = None
+            analyzer._litellm_available = True
+            analyzer._config_override = cfg
+            analyzer.generate_text = MagicMock(return_value="review")
+
+            ma = MarketAnalyzer.__new__(MarketAnalyzer)
+            ma.analyzer = analyzer
+            ma.config = cfg
+            ma.profile = CN_PROFILE
+            ma.strategy = get_market_strategy_blueprint("cn")
+            ma.region = "cn"
+
+            overview = MarketOverview(
+                date="2026-03-05",
+                indices=[
+                    MarketIndex(
+                        code="000001",
+                        name="上证指数",
+                        current=3300.0,
+                        change=12.0,
+                        change_pct=0.36,
+                        open=3288.0,
+                        high=3312.0,
+                        low=3276.0,
+                        amount=145000000000.0,
+                        amplitude=1.1,
+                    )
+                ],
+                up_count=3200,
+                down_count=1800,
+                flat_count=100,
+                limit_up_count=88,
+                limit_down_count=5,
+                total_amount=14567.0,
+                top_sectors=[{"name": "AI算力", "change_pct": 3.25}],
+                bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+            )
+            review = """# 2026-03-05 大盘复盘
+
+## 一、盘面总览
+总结。
+
+## 二、风格分析
+指数。
+
+## 三、板块主线
+板块。
+"""
+
+            result = ma._inject_data_into_review(review, overview)
+
+            title_lines = [
+                line for line in result.splitlines()
+                if "2026-03-05 大盘复盘" in line
+            ]
+            assert title_lines, "expected at least one title line with '2026-03-05 大盘复盘'"
+            assert title_lines[0].startswith("## ")
+            assert not title_lines[0].startswith("# ")
+            assert "## 2026-03-05 大盘复盘" in result
+            assert "### 一、盘面总览" in result
+            assert "### 二、风格分析" in result
+            assert "### 三、板块主线" in result
+            assert "盘面信号" in result
+            assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
+            assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
+            assert "#### 行业板块领涨 Top 5" in result
+            assert "| 1 | AI算力 | +3.25% |" in result
+            assert "#### 行业板块领跌 Top 5" in result
+            assert "| 1 | 煤炭 | -1.12% |" in result
+
+    def test_inject_data_into_review_with_drifted_english_headings(self):
+        """End-to-end English: #+## drift must be normalized, tables emitted."""
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        with patch("src.analyzer.get_config") as mock_cfg, \
+             patch("src.market_analyzer.get_config") as mock_cfg2:
+            cfg = MagicMock()
+            cfg.litellm_model = "gemini/gemini-2.0-flash"
+            cfg.litellm_fallback_models = []
+            cfg.gemini_api_keys = ["«redacted:sk-…»"]
+            cfg.anthropic_api_keys = []
+            cfg.openai_api_keys = []
+            cfg.deepseek_api_keys = []
+            cfg.llm_model_list = []
+            cfg.openai_base_url = None
+            cfg.market_review_region = "cn"
+            cfg.market_review_color_scheme = "green_up"
+            cfg.report_language = "en"
+            cfg.generation_backend = "litellm"
+            cfg.generation_fallback_backend = "litellm"
+            mock_cfg.return_value = cfg
+            mock_cfg2.return_value = cfg
+
+            from src.core.market_profile import CN_PROFILE
+            from src.core.market_strategy import get_market_strategy_blueprint
+            from src.analyzer import GeminiAnalyzer
+            from src.market_analyzer import MarketAnalyzer
+
+            analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+            analyzer._router = None
+            analyzer._litellm_available = True
+            analyzer._config_override = cfg
+            analyzer.generate_text = MagicMock(return_value="review")
+
+            ma = MarketAnalyzer.__new__(MarketAnalyzer)
+            ma.analyzer = analyzer
+            ma.config = cfg
+            ma.profile = CN_PROFILE
+            ma.strategy = get_market_strategy_blueprint("cn")
+            ma.region = "cn"
+
+            overview = MarketOverview(
+                date="2026-03-05",
+                indices=[
+                    MarketIndex(
+                        code="000001",
+                        name="上证指数",
+                        current=3300.0,
+                        change=12.0,
+                        change_pct=0.36,
+                        amount=145000000000.0,
+                    )
+                ],
+                up_count=3200,
+                down_count=1800,
+                flat_count=100,
+                limit_up_count=88,
+                limit_down_count=5,
+                total_amount=14567.0,
+                top_sectors=[{"name": "AI算力", "change_pct": 3.25}],
+                bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+            )
+            review = """# 2026-03-05 A-share Market Recap
+
+## 1. Market Summary
+Summary.
+
+## 2. Index Commentary
+Index.
+
+## 4. Sector Highlights
+Sector.
+"""
+
+            result = ma._inject_data_into_review(review, overview)
+
+            title_lines = [
+                line for line in result.splitlines()
+                if "2026-03-05 A-share Market Recap" in line
+            ]
+            assert title_lines, "expected at least one title line with '2026-03-05 A-share Market Recap'"
+            assert title_lines[0].startswith("## ")
+            assert not title_lines[0].startswith("# ")
+            assert "## 2026-03-05 A-share Market Recap" in result
+            assert "### 1. Market Summary" in result
+            assert "### 2. Index Commentary" in result
+            assert "### 4. Sector Highlights" in result
+            assert "- **Market Signal**: 66/100 (constructive, risk-on)" in result
+            assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
+            assert "Turnover 14567 (CNY 100m)" in result
+            assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
+            assert "#### Leading Industry Sectors" in result
+            assert "| 1 | AI算力 | +3.25% |" in result
+            assert "#### Lagging Industry Sectors" in result
+            assert "| 1 | 煤炭 | -1.12% |" in result

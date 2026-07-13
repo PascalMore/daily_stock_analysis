@@ -53,6 +53,23 @@ _CHINESE_SECTION_PATTERNS = {
     "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
 }
 
+
+# Heading-normalization regexes (DESIGN-09-006 §3.3.2).
+# Designed to be lenient on the LLM-side heading drift (# + ## mix) without
+# hard-coding emoji characters: capture any non-word/non-CJK prefix.
+_NORMALIZE_ZH_TITLE_RE = re.compile(
+    r"^(#{1,4})\s+([^\w\u4e00-\u9fff]*)\s*(\d{4}-\d{2}-\d{2})\s+(.*?大盘复盘)\s*$"
+)
+_NORMALIZE_ZH_SECTION_RE = re.compile(
+    r"^(#{1,4})\s+([^\w\u4e00-\u9fff]*)\s*([一二三四五六七])、\s*(.+?)\s*$"
+)
+_NORMALIZE_EN_TITLE_RE = re.compile(
+    r"^(#{1,4})\s+([^\w]*)\s*(\d{4}-\d{2}-\d{2})\s+(.*?Market Recap)\s*$"
+)
+_NORMALIZE_EN_SECTION_RE = re.compile(
+    r"^(#{1,4})\s+([^\w]*)\s*(\d)\.\s*(.+?)\s*$"
+)
+
 @dataclass
 class MarketIndex:
     """大盘指数数据"""
@@ -911,6 +928,74 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "url": cls._compact_news_text(cls._get_news_field(item, "url"), limit=240),
         }
 
+    @staticmethod
+    def _normalize_market_review_headings(
+        review: str,
+        *,
+        language: str,
+        date: str,
+    ) -> str:
+        r"""Normalize drifted Markdown heading levels in the LLM-generated review.
+
+        The LLM occasionally emits the per-market title as ``#`` and the body
+        sections as ``##`` (instead of the prompt's ``##`` / ``###``). That
+        drift causes the inject step's ``### ...`` regex to miss every body
+        section and silently drop the data tables.
+
+        This helper is idempotent (already-correct input is a no-op) and
+        fail-safe (any unexpected exception returns the original text).
+
+        Rules (DESIGN-09-006 §3.3):
+          - ``# YYYY-MM-DD ... 大盘复盘`` / ``... Market Recap`` -> ``## ...``
+          - ``#/##/#### 一、xxx`` (and 二/三/四/五/六/七) -> ``### 一、xxx``
+          - ``#/##/#### 1. xxx`` (and 2-9) -> ``### 1. xxx``
+          - Emoji/symbol prefixes are preserved via a ``[^\w]`` capture group.
+          - Any line that does not match is left untouched.
+        """
+        if not review or not review.strip():
+            return review
+        try:
+            date_token = date or ""
+            lines = review.split("\n")
+            normalized: List[str] = []
+            is_zh = language != "en"
+            title_re = _NORMALIZE_ZH_TITLE_RE if is_zh else _NORMALIZE_EN_TITLE_RE
+            section_re = _NORMALIZE_ZH_SECTION_RE if is_zh else _NORMALIZE_EN_SECTION_RE
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith("#"):
+                    normalized.append(line)
+                    continue
+
+                match = title_re.match(stripped)
+                if match and (not date_token or match.group(3) == date_token):
+                    prefix, emoji_or_empty, date_part, title_part = match.groups()
+                    if prefix != "##":
+                        rebuilt = f"## {emoji_or_empty}{date_part} {title_part}".strip()
+                        normalized.append(rebuilt)
+                    else:
+                        normalized.append(line)
+                    continue
+
+                match = section_re.match(stripped)
+                if match:
+                    prefix, emoji_or_empty, numeral, title = match.groups()
+                    if is_zh:
+                        rebuilt = f"### {emoji_or_empty}{numeral}、{title}".strip()
+                    else:
+                        rebuilt = f"### {emoji_or_empty}{numeral}. {title}".strip()
+                    if rebuilt != stripped:
+                        normalized.append(rebuilt)
+                    else:
+                        normalized.append(line)
+                    continue
+
+                normalized.append(line)
+            return "\n".join(normalized)
+        except Exception:
+            # Fail-safe: never break the inject pipeline.
+            return review
+
     def _inject_data_into_review(
         self,
         review: str,
@@ -918,6 +1003,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         news: Optional[List] = None,
     ) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
+        # Normalize drifted headings so the section regexes below match reliably.
+        review = self._normalize_market_review_headings(
+            review,
+            language=self._get_review_language(),
+            date=overview.date,
+        )
         # Build data blocks
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
